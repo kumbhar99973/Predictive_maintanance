@@ -1,0 +1,94 @@
+import pandas as pd
+import numpy as np
+import boto3
+from boto3.s3.transfer import S3Transfer
+from botocore.exceptions import ClientError
+from botocore.config import Config
+from sklearn.neighbors import KNeighborsRegressor
+from pickle import dump,load
+import json as JSON
+import pickle
+import json
+from io import BytesIO
+
+def lambda_handler(event, context):
+    
+    payload = event["body"]
+
+    payload = json.loads(payload)
+    
+    payload = payload["11541"]
+    
+    # Convert Json to Pndas Dataframe
+    # df = pd.read_json(payload)
+    # df = pd.DataFrame().append(payload, ignore_index=True)
+    df = pd.DataFrame([payload], columns=payload.keys())
+    # df = (pd.DataFrame.from_dict(payload))
+    
+    # 
+    # df = df.apply(pd.to_numeric, errors = 'coerce')
+    df = df.sort_values(by='DOWNTIME')
+    
+    # replace nan value with null
+    df = df.where(pd.notnull(df), None)
+
+    # convert boolean object in to integer
+    df['GREDE10890_FIX_TAKE_DATA_A'] =  df['GREDE10890_FIX_TAKE_DATA_A'].astype(int)
+    df['GREDE10890_FIX_TAKE_DATA_B'] =  df['GREDE10890_FIX_TAKE_DATA_B'].astype(int)
+    df['GREDE10890_FIX_TRG_M_V'] =  df['GREDE10890_FIX_TRG_M_V'].astype(int)
+
+    # remove columns whoes type is datetime
+    df = df.drop(columns=['UTC_TIMESTAMP','LOCAL_TIMESTAMP'])
+
+    # select only integer columns from data
+    df = df.select_dtypes(include='number')
+
+    # Remove unwanted columns
+    if any('final_remain_cycle' in string for string in df.columns):
+        df = df.drop(columns=['final_remain_cycle'])
+    elif any('Unnamed: 0' in string for string in df.columns):
+        df = df.drop(columns=['Unnamed: 0'])
+    else:
+        pass
+    
+    print('df shape after droping',df.shape)
+    # connect to S3 bucket
+    s3 = boto3.client('s3')
+    bucket = 'aam-predictive-maintenance-knn' 
+    scaler_key = 'MinMaxScaler.pkl'
+    model_key = 'Predictive_custom_KNN_minkowski_model.sav'
+    
+
+    #load saved scaler
+    with BytesIO() as data:
+        boto3.client("s3").download_fileobj(Bucket=bucket, Key=scaler_key, Fileobj=data)
+        # s3.get_object(bucket).download_fileobj(scaler_key, data)
+        data.seek(0)    # move back to the beginning after writing
+        scaler = pickle.load(data)
+
+    # Transform data using scaler
+    prediction_data = scaler.transform(df)
+    print('prediction_data shape',prediction_data.shape)
+    
+    #load saved Model
+    with BytesIO() as f:
+        boto3.client("s3").download_fileobj(Bucket=bucket, Key=model_key, Fileobj=f)
+        # s3.get_object(bucket).download_fileobj(scaler_key, data)
+        f.seek(0)    # move back to the beginning after writing
+        model = pickle.load(f)
+    
+    print('Model Rrading Complete')
+    
+    # Make a prediction
+    predictions = model.predict(prediction_data)
+    print('Remaining Usefull Life Is:',int(predictions))
+    
+    # # Convert Response in to Json
+    response1 = JSON.loads(str(int(predictions)))
+    # response2 = JSON.loads(str(int(transactionId)))
+
+    return { 
+        "statusCode": 200,
+        'Remaining Useful Life Is: ': response1
+        # 'transactionId: ': response2,
+    }
